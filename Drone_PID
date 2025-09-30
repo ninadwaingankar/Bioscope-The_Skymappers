@@ -1,0 +1,107 @@
+//PID motor control for Bioscope Edge AI drone
+
+#include <Wire.h>
+#include <Servo.h>
+
+// ====== ESC setup ======
+Servo esc1;   // Motor 1 (Front-left, clockwise)
+Servo esc2;   // Motor 2 (Front-right, counter-clockwise)
+Servo esc3;   // Motor 3 (Rear, counter-clockwise)
+
+const int pin1 = 9;
+const int pin2 = 10;
+const int pin3 = 11;
+
+// Throttle limits
+const int MIN_THROTTLE = 1000;
+const int MAX_THROTTLE = 2000;
+int baseThrottle = 1280;   // Hover throttle (adjust experimentally)
+
+// ====== MPU6050 setup ======
+float RateRoll, RatePitch, RateYaw;
+
+void readGyro() {
+  Wire.beginTransmission(0x68);
+  Wire.write(0x43);
+  Wire.endTransmission();
+  Wire.requestFrom(0x68, 6);
+
+  int16_t GyroX = Wire.read() << 8 | Wire.read();
+  int16_t GyroY = Wire.read() << 8 | Wire.read();
+  int16_t GyroZ = Wire.read() << 8 | Wire.read();
+
+  RateRoll  = (float)GyroX / 65.5;   // deg/sec
+  RatePitch = (float)GyroY / 65.5;
+  RateYaw   = (float)GyroZ / 65.5;
+}
+
+// ====== PID parameters ======
+float targetRoll = 0.0, targetPitch = 0.0; // level hover
+float kp = 1.8, ki = 0.0, kd = 0.8;
+
+float errorRoll, errorPitch;
+float prevErrorRoll = 0, prevErrorPitch = 0;
+float integralRoll = 0, integralPitch = 0;
+
+// ====== PID function ======
+float computePID(float target, float current, float &prevError, float &integral) {
+  float error = target - current;
+  integral += error;
+  float derivative = error - prevError;
+  prevError = error;
+  return kp * error + ki * integral + kd * derivative;
+}
+
+void setup() {
+  Serial.begin(57600);
+
+  // Init ESCs
+  esc1.attach(pin1);
+  esc2.attach(pin2);
+  esc3.attach(pin3);
+
+  esc1.writeMicroseconds(MIN_THROTTLE);
+  esc2.writeMicroseconds(MIN_THROTTLE);
+  esc3.writeMicroseconds(MIN_THROTTLE);
+  delay(3000);
+
+  // Init MPU6050
+  Wire.begin();
+  Wire.setClock(400000);
+  Wire.beginTransmission(0x68);
+  Wire.write(0x6B);
+  Wire.write(0x00);  // wake up sensor
+  Wire.endTransmission();
+}
+
+void loop() {
+  readGyro();
+
+  // ===== PID corrections =====
+  float rollCorrection  = computePID(targetRoll, RateRoll, prevErrorRoll, integralRoll);
+  float pitchCorrection = computePID(targetPitch, RatePitch, prevErrorPitch, integralPitch);
+
+  // ===== Mix corrections into motors =====
+  int m1 = baseThrottle + rollCorrection - pitchCorrection; // Front-left
+  int m2 = baseThrottle - rollCorrection - pitchCorrection; // Front-right
+  int m3 = baseThrottle + pitchCorrection;                  // Rear
+
+  // Constrain throttle
+  m1 = constrain(m1, MIN_THROTTLE, MAX_THROTTLE);
+  m2 = constrain(m2, MIN_THROTTLE, MAX_THROTTLE);
+  m3 = constrain(m3, MIN_THROTTLE, MAX_THROTTLE);
+
+  // Write to ESCs
+  esc1.writeMicroseconds(m1);
+  esc2.writeMicroseconds(m2);
+  esc3.writeMicroseconds(m3);
+
+  // Debugging
+  Serial.print("Roll="); Serial.print(RateRoll);
+  Serial.print(" Pitch="); Serial.print(RatePitch);
+  Serial.print(" | M1="); Serial.print(m1);
+  Serial.print(" M2="); Serial.print(m2);
+  Serial.print(" M3="); Serial.println(m3);
+
+  delay(20); // 50 Hz loop
+}
